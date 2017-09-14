@@ -234,7 +234,20 @@ def placeholder(shape=None, ndim=None, dtype=None, sparse=False, name=None):
         x = T.TensorType(dtype, broadcast)(name)
     x._keras_shape = shape
     x._uses_learning_phase = False
+    x._theano_placeholder = True
     return x
+
+
+def is_placeholder(x):
+    """Returns whether `x` is a placeholder.
+
+    # Arguments
+        x: A candidate placeholder.
+
+    # Returns
+        Boolean.
+    """
+    return hasattr(x, '_theano_placeholder') and x._theano_placeholder
 
 
 def shape(x):
@@ -1146,8 +1159,8 @@ def reverse(x, axes):
     return x[slices]
 
 
-def pattern_broadcast(x, broatcastable):
-    return T.patternbroadcast(x, broatcastable)
+def pattern_broadcast(x, broadcastable):
+    return T.patternbroadcast(x, broadcastable)
 
 # VALUE MANIPULATION
 
@@ -2236,7 +2249,7 @@ def truncated_normal(shape, mean=0.0, stddev=1.0, dtype=None, seed=None):
 # Theano implementation of CTC
 # Used with permission from Shawn Tan
 # https://github.com/shawntan/
-# Note that tensorflow's native CTC code is significantly
+# Note that TensorFlow's native CTC code is significantly
 # faster than this
 
 

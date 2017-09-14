@@ -35,7 +35,7 @@ _GRAPH_LEARNING_PHASES = {}
 
 # This dictionary holds a mapping {graph: UID_DICT}.
 # each UID_DICT is a dictionary mapping name prefixes to a current index,
-# used for generatic graph-specific string UIDs
+# used for generic graph-specific string UIDs
 # for various names (e.g. layer names).
 _GRAPH_UID_DICTS = {}
 
@@ -164,7 +164,22 @@ def get_session():
         session = _SESSION
     if not _MANUAL_VAR_INIT:
         with session.graph.as_default():
-            _initialize_variables()
+            variables = tf.global_variables()
+            candidate_vars = []
+            for v in variables:
+                if not getattr(v, '_keras_initialized', False):
+                    candidate_vars.append(v)
+            # This step is expensive, so we only run it on variables
+            # not already marked as initialized.
+            is_initialized = session.run(
+                [tf.is_variable_initialized(v) for v in candidate_vars])
+            uninitialized_vars = []
+            for flag, v in zip(is_initialized, candidate_vars):
+                if not flag:
+                    uninitialized_vars.append(v)
+                v._keras_initialized = True
+            if uninitialized_vars:
+                session.run(tf.variables_initializer(uninitialized_vars))
     return session
 
 
@@ -179,32 +194,6 @@ def set_session(session):
 
 
 # VARIABLE MANIPULATION
-
-def _convert_string_dtype(dtype):
-    """Get the type from a string.
-
-    # Arguments
-        dtype: A string representation of a type.
-
-    # Returns
-        The type requested.
-
-    # Raises
-        ValueError: if `dtype` is not supported.
-    """
-    mapping = {'float16': tf.float16,
-               'float32': tf.float32,
-               'float64': tf.float64,
-               'int16': tf.int16,
-               'int32': tf.int32,
-               'int64': tf.int64,
-               'uint8': tf.int8,
-               'uint16': tf.uint16}
-
-    if dtype not in mapping:
-        raise ValueError('Unsupported dtype:', dtype)
-    return mapping[dtype]
-
 
 def _to_tensor(x, dtype):
     """Convert the input `x` to a tensor of type `dtype`.
@@ -313,29 +302,18 @@ def variable(value, dtype=None, name=None, constraint=None):
         v._keras_shape = sparse_coo.shape
         v._uses_learning_phase = False
         return v
-    v = tf.Variable(value, dtype=_convert_string_dtype(dtype), name=name)
+    v = tf.Variable(value, dtype=tf.as_dtype(dtype), name=name)
     if isinstance(value, np.ndarray):
         v._keras_shape = value.shape
     elif hasattr(value, 'get_shape'):
         v._keras_shape = int_shape(value)
     v._uses_learning_phase = False
-    # TODO: move to `tf.get_variable` when supported in public release.
-    v.constraint = constraint
+    # TODO: move to Variable constructor when supported in public release.
+    try:
+        v.constraint = constraint
+    except AttributeError:
+        v._constraint = constraint
     return v
-
-
-def _initialize_variables():
-    """Utility to initialize uninitialized variables on the fly.
-    """
-    variables = tf.global_variables()
-    uninitialized_variables = []
-    for v in variables:
-        if not hasattr(v, '_keras_initialized') or not v._keras_initialized:
-            uninitialized_variables.append(v)
-            v._keras_initialized = True
-    if uninitialized_variables:
-        sess = get_session()
-        sess.run(tf.variables_initializer(uninitialized_variables))
 
 
 def constant(value, dtype=None, shape=None, name=None):
@@ -440,6 +418,21 @@ def placeholder(shape=None, ndim=None, dtype=None, sparse=False, name=None):
     x._keras_shape = shape
     x._uses_learning_phase = False
     return x
+
+
+def is_placeholder(x):
+    """Returns whether `x` is a placeholder.
+
+    # Arguments
+        x: A candidate placeholder.
+
+    # Returns
+        Boolean.
+    """
+    try:
+        return x.op.type == 'Placeholder'
+    except AttributeError:
+        return False
 
 
 def shape(x):
@@ -603,7 +596,7 @@ def zeros(shape, dtype=None, name=None):
     """
     if dtype is None:
         dtype = floatx()
-    tf_dtype = _convert_string_dtype(dtype)
+    tf_dtype = tf.as_dtype(dtype)
     return variable(tf.constant_initializer(0., dtype=tf_dtype)(shape),
                     dtype, name)
 
@@ -631,7 +624,7 @@ def ones(shape, dtype=None, name=None):
     """
     if dtype is None:
         dtype = floatx()
-    tf_dtype = _convert_string_dtype(dtype)
+    tf_dtype = tf.as_dtype(dtype)
     return variable(tf.constant_initializer(1., dtype=tf_dtype)(shape),
                     dtype, name)
 
@@ -751,7 +744,7 @@ def random_uniform_variable(shape, low, high, dtype=None,
     """
     if dtype is None:
         dtype = floatx()
-    tf_dtype = _convert_string_dtype(dtype)
+    tf_dtype = tf.as_dtype(dtype)
     if seed is None:
         # ensure that randomness is conditioned by the Numpy RNG
         seed = np.random.randint(10e8)
@@ -788,7 +781,7 @@ def random_normal_variable(shape, mean, scale, dtype=None,
     """
     if dtype is None:
         dtype = floatx()
-    tf_dtype = _convert_string_dtype(dtype)
+    tf_dtype = tf.as_dtype(dtype)
     if seed is None:
         # ensure that randomness is conditioned by the Numpy RNG
         seed = np.random.randint(10e8)
@@ -2135,8 +2128,8 @@ def set_value(x, value):
         value: Value to set the tensor to, as a Numpy array
             (of the same shape).
     """
-    value = np.asarray(value)
-    tf_dtype = _convert_string_dtype(x.dtype.name.split('_')[0])
+    value = np.asarray(value, dtype=dtype(x))
+    tf_dtype = tf.as_dtype(x.dtype.name.split('_')[0])
     if hasattr(x, '_assign_placeholder'):
         assign_placeholder = x._assign_placeholder
         assign_op = x._assign_op
@@ -2159,8 +2152,8 @@ def batch_set_value(tuples):
         assign_ops = []
         feed_dict = {}
         for x, value in tuples:
-            value = np.asarray(value)
-            tf_dtype = _convert_string_dtype(x.dtype.name.split('_')[0])
+            value = np.asarray(value, dtype=dtype(x))
+            tf_dtype = tf.as_dtype(x.dtype.name.split('_')[0])
             if hasattr(x, '_assign_placeholder'):
                 assign_placeholder = x._assign_placeholder
                 assign_op = x._assign_op
@@ -2189,6 +2182,15 @@ def get_variable_shape(x):
 
 def print_tensor(x, message=''):
     """Prints `message` and the tensor value when evaluated.
+
+     Note that `print_tensor` returns a new tensor identical to `x`
+     which should be used in the following code. Otherwise the
+     print operation is not taken into account during evaluation.
+
+     # Example
+     ```python
+         >>> x = K.print_tensor(x, message="x is: ")
+     ```
 
     # Arguments
         x: Tensor to print.
@@ -3573,10 +3575,10 @@ def truncated_normal(shape, mean=0.0, stddev=1.0, dtype=None, seed=None):
 
 
 # CTC
-# tensorflow has a native implemenation, but it uses sparse tensors
+# TensorFlow has a native implementation, but it uses sparse tensors
 # and therefore requires a wrapper for Keras. The functions below convert
 # dense to sparse tensors and also wraps up the beam search code that is
-# in tensorflow's CTC implementation
+# in TensorFlow's CTC implementation
 
 
 def ctc_label_dense_to_sparse(labels, label_lengths):
@@ -3587,7 +3589,7 @@ def ctc_label_dense_to_sparse(labels, label_lengths):
         label_lengths: length of the labels.
 
     # Returns
-        A sparse tensor representation of the lablels.
+        A sparse tensor representation of the labels.
     """
     label_shape = tf.shape(labels)
     num_batches_tns = tf.stack([label_shape[0]])

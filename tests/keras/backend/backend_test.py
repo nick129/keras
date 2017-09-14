@@ -2,14 +2,34 @@ import pytest
 from numpy.testing import assert_allclose
 import numpy as np
 import scipy.sparse as sparse
+import warnings
 
 from keras import backend as K
-from keras.backend import theano_backend as KTH, floatx, set_floatx, variable
-from keras.backend import tensorflow_backend as KTF
+from keras.backend import floatx, set_floatx, variable
 from keras.utils.conv_utils import convert_kernel
-from keras.backend import cntk_backend as KC
 
-BACKENDS = [KTH, KTF, KC]
+BACKENDS = []  # Holds a list of all available back-ends
+
+try:
+    from keras.backend import cntk_backend as KC
+    BACKENDS.append(KC)
+except ImportError:
+    KC = None
+    warnings.warn('Could not import the CNTK backend')
+
+try:
+    from keras.backend import tensorflow_backend as KTF
+    BACKENDS.append(KTF)
+except ImportError:
+    KTF = None
+    warnings.warn('Could not import the TensorFlow backend.')
+
+try:
+    from keras.backend import theano_backend as KTH
+    BACKENDS.append(KTH)
+except ImportError:
+    KTH = None
+    warnings.warn('Could not import the Theano backend')
 
 
 def check_dtype(var, dtype):
@@ -196,11 +216,6 @@ class TestBackend(object):
         check_single_tensor_operation('random_normal_variable', (2, 3), BACKENDS,
                                       mean=0., scale=1.,
                                       shape_or_val=False, assert_value_equality=False)
-
-        # not supported dtype
-        for dtype in ['int16', 'int32', 'int64', 'uint8', 'uint16', 'double']:
-            with pytest.raises(ValueError):
-                ztf = KTF.random_normal_variable((2, 3), 0, 1, dtype=dtype)
 
     @pytest.mark.parametrize('k', [KTF], ids=['TensorFlow'])
     def test_batch_dot_shape(self, k):
@@ -674,7 +689,7 @@ class TestBackend(object):
         # cross_entropy call require the label is a valid probability distribution,
         # otherwise it is garbage in garbage out...
         # due to the algo difference, we can't guarantee CNTK has the same result on the garbage input.
-        # so create a seperate test case for valid lable input
+        # so create a separate test case for valid label input
         check_two_tensor_operation('categorical_crossentropy', (4, 2), (4, 2), [KTH, KTF], from_logits=True)
         xval = np.asarray([[0.26157712, 0.0432167], [-0.43380741, 0.30559841],
                            [0.20225059, -0.38956559], [-0.13805378, 0.08506755]], dtype=np.float32)
@@ -1008,7 +1023,7 @@ class TestBackend(object):
                                        BACKENDS, cntk_dynamicity=True,
                                        data_format=data_format)
 
-        # Test invalid use casess
+        # Test invalid use cases
         for k in BACKENDS:
             x = k.variable(np.random.random(x_shape))
             b = k.variable(np.random.random(bias_shape))
@@ -1376,6 +1391,14 @@ class TestBackend(object):
 
         # Restore old value
         set_floatx(old_floatx)
+
+    def test_variable_support_bool_dtype(self):
+        # Github issue: 7819
+        if K.backend() == 'tensorflow':
+            assert K.dtype(K.variable(1, dtype='int16')) == 'int16'
+            assert K.dtype(K.variable(False, dtype='bool')) == 'bool'
+            with pytest.raises(TypeError):
+                K.variable('', dtype='unsupported')
 
 
 if __name__ == '__main__':

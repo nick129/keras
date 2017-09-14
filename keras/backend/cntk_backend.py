@@ -57,7 +57,7 @@ def set_learning_phase(value):
         raise ValueError('CNTK Backend: Set learning phase '
                          'with value %s is not supported, '
                          'expected 0 or 1.' % value)
-    v = np.float32([value])
+    v = np.asarray(value)
     _LEARNING_PHASE.value = v
 
 
@@ -88,7 +88,7 @@ def in_train_phase(x, alt, training=None):
 
 def in_test_phase(x, alt):
     global _LEARNING_PHASE
-    # Similiar as in_train_phase, use element_select as workaround.
+    # Similar as in_train_phase, use element_select as workaround.
     if callable(x) and isinstance(x, C.cntk_py.Function) is False:
         x = x()
     if callable(alt) and isinstance(alt, C.cntk_py.Function) is False:
@@ -264,7 +264,20 @@ def placeholder(
         name=name)
     x._keras_shape = shape
     x._uses_learning_phase = False
+    x._cntk_placeholder = True
     return x
+
+
+def is_placeholder(x):
+    """Returns whether `x` is a placeholder.
+
+    # Arguments
+        x: A candidate placeholder.
+
+    # Returns
+        Boolean.
+    """
+    return hasattr(x, '_cntk_placeholder') and x._cntk_placeholder
 
 
 def is_keras_tensor(x):
@@ -687,7 +700,7 @@ def _normalize_axis(axis, x):
 
     if nones > ndim:
         raise ValueError('CNTK Backend: tensor with keras shape: `%s` has '
-                         '%d cntk dynamic axis, this is not expected, plesae '
+                         '%d cntk dynamic axis, this is not expected, please '
                          'double check the keras shape history.' % (str(shape), nones))
 
     # Current cntk does not support shape like (1, batch). so using the workaround
@@ -1066,7 +1079,7 @@ def reshape(x, shape):
                 return x
             return C.user_function(ReshapeBatch(x, shape[1:]))
         else:
-            # no collaps, then first need to padding the shape
+            # no collapse, then first need to padding the shape
             if num_dynamic_axis >= len(shape):
                 i = 0
                 while i < len(shape):
@@ -1181,7 +1194,7 @@ def _static_rnn(step_function, inputs, initial_states,
         raise ValueError('CNTK Backend: the input of static rnn '
                          'has shape `%s`, the second axis '
                          'is not static. If you want to run '
-                         'rnn with non-static axis, plesae try '
+                         'rnn with non-static axis, please try '
                          'dynamic rnn with sequence axis.' % shape)
     if constants is None:
         constants = []
@@ -1310,7 +1323,15 @@ def rnn(step_function, inputs, initial_states,
             initial.append(s)
 
     need_convert = not has_seq_axis(inputs)
+    if go_backwards and need_convert is False:
+        raise NotImplementedError('CNTK Backend: `go_backwards` is not supported with '
+                                  'variable-length sequences. Please specify a '
+                                  'static length for your sequences.')
+
     if need_convert:
+        if go_backwards:
+            inputs = reverse(inputs, 1)
+
         inputs = C.to_sequence(inputs)
 
         j = 0
@@ -1327,6 +1348,8 @@ def rnn(step_function, inputs, initial_states,
             j += 1
 
     if mask is not None and not has_seq_axis(mask):
+        if go_backwards:
+            mask = reverse(mask, 1)
         if len(int_shape(mask)) == 2:
             mask = expand_dims(mask)
         mask = C.to_sequence_like(mask, inputs)
@@ -1339,10 +1362,7 @@ def rnn(step_function, inputs, initial_states,
             place_holders = [C.placeholder(dynamic_axes=x.dynamic_axes) for _ in states]
             past_values = []
             for s, p in zip(states, place_holders):
-                past_values.append(
-                    C.sequence.past_value(
-                        p, s) if go_backwards is False else C.sequence.future_value(
-                        p, s))
+                past_values.append(C.sequence.past_value(p, s))
             new_output, new_states = step_function(
                 x, tuple(past_values) + tuple(constants))
             if m is not None:
